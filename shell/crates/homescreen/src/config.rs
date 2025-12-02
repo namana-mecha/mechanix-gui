@@ -1,7 +1,9 @@
+#![allow(dead_code, unused)]
+
 /// Configuration for the homescreen application
 ///
 /// This struct centralizes all constants and configuration values used throughout
-/// the homescreen. 
+/// the homescreen.
 #[derive(Clone, Debug)]
 pub struct HomescreenConfig {
     /// Window configuration
@@ -29,6 +31,15 @@ pub struct WindowConfig {
     pub height: f32,
 }
 
+impl Default for WindowConfig {
+    fn default() -> Self {
+        Self {
+            width: 540.0,
+            height: 540.0,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct GridConfig {
     /// Number of columns in the widget grid
@@ -44,19 +55,41 @@ pub struct GridConfig {
     pub gap_percent: f32,
 }
 
+impl Default for GridConfig {
+    fn default() -> Self {
+        Self {
+            cols: 4,
+            rows: 4,
+            padding_percent: 0.05,
+            gap_percent: 0.01,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AnimationConfig {
     /// Widget animation speed in pixels per second
     pub widget_speed: f32,
 
-    /// Page transition animation velocity in pixels per second
-    pub page_velocity: f32,
+    /// Page transition animation duration
+    pub page_transition: std::time::Duration,
 
     /// Maximum delta time for animation updates to prevent jumps (in seconds)
     pub max_delta_time: f32,
 
     /// Minimum distance threshold to consider animation complete (in pixels)
     pub completion_threshold: f32,
+}
+
+impl Default for AnimationConfig {
+    fn default() -> Self {
+        Self {
+            widget_speed: 5000.0,
+            page_transition: std::time::Duration::from_millis(300),
+            max_delta_time: 0.1,
+            completion_threshold: 1.0,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -81,6 +114,20 @@ pub struct InteractionConfig {
 
     /// Percentage of window width to swipe before page changes (0.0 to 1.0)
     pub page_swipe_threshold: f32,
+}
+
+impl Default for InteractionConfig {
+    fn default() -> Self {
+        Self {
+            drag_threshold: 10.0,
+            hold_duration: 1.0,
+            hold_movement_threshold: 10.0,
+            edge_trigger_threshold: 50.0,
+            edge_hold_duration: 500,
+            page_switch_cooldown: 500,
+            page_swipe_threshold: 0.25,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -116,46 +163,31 @@ pub struct VisualConfig {
     pub debug_info_text_color: u32,
 }
 
+impl Default for VisualConfig {
+    fn default() -> Self {
+        Self {
+            page_gap: 40.0,
+            background_color: 0x1a1a1a,
+            indicator_active_color: 0xFFFFFF,
+            indicator_inactive_color: 0xFFFFFF66,
+            indicator_dot_size: 8.0,
+            indicator_dot_gap: 8.0,
+            default_widget_color: 0xFF69B4,
+            debug_info_offset: 20.0,
+            debug_info_text_size: 12.0,
+            debug_info_text_color: 0xFFFFFF88,
+        }
+    }
+}
+
 impl Default for HomescreenConfig {
     fn default() -> Self {
         Self {
-            window: WindowConfig {
-                width: 540.0,
-                height: 540.0,
-            },
-            grid: GridConfig {
-                cols: 4,
-                rows: 4,
-                padding_percent: 0.05,
-                gap_percent: 0.01,
-            },
-            animation: AnimationConfig {
-                widget_speed: 5000.0,
-                page_velocity: 2000.0,
-                max_delta_time: 0.1,
-                completion_threshold: 1.0,
-            },
-            interaction: InteractionConfig {
-                drag_threshold: 10.0,
-                hold_duration: 1.0,
-                hold_movement_threshold: 10.0,
-                edge_trigger_threshold: 50.0,
-                edge_hold_duration: 500,
-                page_switch_cooldown: 500,
-                page_swipe_threshold: 0.25,
-            },
-            visual: VisualConfig {
-                page_gap: 40.0,
-                background_color: 0x1a1a1a,
-                indicator_active_color: 0xFFFFFF,
-                indicator_inactive_color: 0xFFFFFF66,
-                indicator_dot_size: 8.0,
-                indicator_dot_gap: 8.0,
-                default_widget_color: 0xFF69B4,
-                debug_info_offset: 20.0,
-                debug_info_text_size: 12.0,
-                debug_info_text_color: 0xFFFFFF88,
-            },
+            window: WindowConfig::default(),
+            grid: GridConfig::default(),
+            animation: AnimationConfig::default(),
+            interaction: InteractionConfig::default(),
+            visual: VisualConfig::default(),
         }
     }
 }

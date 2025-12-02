@@ -1,593 +1,413 @@
 use crate::config::HomescreenConfig;
-use crate::models::{GridPosition, HomescreenState, Page, Widget, WidgetSize};
-use gpui::prelude::FluentBuilder;
+use crate::models::HomescreenState;
+use commons::widgets::wing;
 use gpui::*;
 
-pub mod widgets;
-pub use widgets::*;
+/// A positioned widget container that wraps a widget with a wing border
+/// and positions it absolutely at the specified bounds.
+#[derive(IntoElement)]
+struct PositionedWidget {
+    bounds: Bounds<Pixels>,
+    widget: AnyElement,
+}
+
+impl PositionedWidget {
+    fn new(bounds: Bounds<Pixels>, widget: AnyElement) -> Self {
+        Self { bounds, widget }
+    }
+}
+
+impl RenderOnce for PositionedWidget {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let mut w = wing();
+        w.border_radius(px(12.0));
+        w.absolute()
+            .left(self.bounds.origin.x)
+            .top(self.bounds.origin.y)
+            .w(self.bounds.size.width)
+            .h(self.bounds.size.height)
+            .child(self.widget)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum DragState {
+    Idle,
+    /// Holding down on a potential widget, waiting for hold duration
+    Holding {
+        widget_id: crate::layout_manager::WidgetId,
+        start_pos: Point<Pixels>,
+        start_time: std::time::Instant,
+    },
+    /// Dragging a widget
+    DraggingWidget {
+        widget_id: crate::layout_manager::WidgetId,
+        start_pos: Point<Pixels>,
+        current_pos: Point<Pixels>,
+        original_bounds: Bounds<Pixels>,
+    },
+    /// Dragging to switch pages
+    DraggingPage { start_x: f32, current_offset: f32 },
+}
 
 pub struct Homescreen {
     state: HomescreenState,
-    window_size: Size<Pixels>,
     config: HomescreenConfig,
+    drag_state: DragState,
+    drag_offset: f32,         // Current offset during drag
+    target_offset: f32,       // Target offset for animation (always 0.0 when at rest)
+    animation_trigger: usize, // Increment to trigger new animation
 }
 
 impl Homescreen {
-    pub fn new(_cx: &mut Context<Self>) -> Self {
-        let config = HomescreenConfig::default();
-        let window_size = size(px(config.window.width), px(config.window.height));
-        let mut state = HomescreenState::new(&config);
-
-        let mut page = Page::new(0, config.grid.cols, config.grid.rows);
-
-        let demo_widgets = vec![
-            Widget::new(
-                2,
-                "Photos",
-                "📷",
-                WidgetSize::new(1, 1),
-                GridPosition::new(2, 0),
-                &config,
-            )
-            .with_color(rgb(0x4A90E2).into()),
-            Widget::new(
-                3,
-                "Calendar",
-                "📅",
-                WidgetSize::new(1, 1),
-                GridPosition::new(3, 0),
-                &config,
-            )
-            .with_color(rgb(0xE74C3C).into()),
-            Widget::new(
-                6,
-                "Notes",
-                "📝",
-                WidgetSize::new(1, 2),
-                GridPosition::new(1, 2),
-                &config,
-            )
-            .with_color(rgb(0xF39C12).into()),
-            Widget::new(
-                8,
-                "Settings",
-                "⚙️",
-                WidgetSize::new(1, 1),
-                GridPosition::new(3, 2),
-                &config,
-            )
-            .with_color(rgb(0x34495E).into()),
-            Widget::new(
-                10,
-                "Browser",
-                "🌐",
-                WidgetSize::new(1, 1),
-                GridPosition::new(2, 3),
-                &config,
-            )
-            .with_color(rgb(0xE67E22).into()),
-        ];
-
-        for widget in demo_widgets {
-            if let Err(e) = page.add_widget(widget) {
-                eprintln!("Failed to add widget: {}", e);
-            }
-        }
-        state.add_page(page);
-
-        let mut page2 = Page::new(1, config.grid.cols, config.grid.rows);
-        let page2_widgets = vec![
-            Widget::new(
-                13,
-                "Instagram",
-                "📸",
-                WidgetSize::new(1, 1),
-                GridPosition::new(1, 0),
-                &config,
-            )
-            .with_color(rgb(0xE4405F).into()),
-            Widget::new(
-                15,
-                "Email",
-                "📧",
-                WidgetSize::new(2, 2),
-                GridPosition::new(0, 1),
-                &config,
-            )
-            .with_color(rgb(0xD44638).into()),
-            Widget::new(
-                17,
-                "Discord",
-                "🎮",
-                WidgetSize::new(1, 1),
-                GridPosition::new(3, 1),
-                &config,
-            )
-            .with_color(rgb(0x5865F2).into()),
-            Widget::new(
-                20,
-                "Phone",
-                "📞",
-                WidgetSize::new(2, 1),
-                GridPosition::new(0, 3),
-                &config,
-            )
-            .with_color(rgb(0x34C759).into()),
-        ];
-        for widget in page2_widgets {
-            if let Err(e) = page2.add_widget(widget) {
-                eprintln!("Failed to add widget: {}", e);
-            }
-        }
-        state.add_page(page2);
-
-        let mut page3 = Page::new(2, config.grid.cols, config.grid.rows);
-        let page3_widgets = vec![
-            Widget::new(
-                27,
-                "Apple TV",
-                "📺",
-                WidgetSize::new(1, 1),
-                GridPosition::new(0, 2),
-                &config,
-            )
-            .with_color(rgb(0x000000).into()),
-            Widget::new(
-                29,
-                "Podcasts",
-                "🎙️",
-                WidgetSize::new(1, 1),
-                GridPosition::new(2, 2),
-                &config,
-            )
-            .with_color(rgb(0x8032DC).into()),
-        ];
-        for widget in page3_widgets {
-            if let Err(e) = page3.add_widget(widget) {
-                eprintln!("Failed to add widget: {}", e);
-            }
-        }
-        state.add_page(page3);
-
-        Self {
+    pub fn new(_cx: &mut Context<Self>, config: HomescreenConfig) -> Self {
+        let state = HomescreenState::new(&config);
+        Homescreen {
             state,
-            window_size,
             config,
+            drag_state: DragState::Idle,
+            drag_offset: 0.0,
+            target_offset: 0.0,
+            animation_trigger: 0,
         }
     }
 
-    fn calculate_grid_padding(&self) -> Pixels {
-        self.window_size.width * self.config.grid.padding_percent
-    }
+    fn handle_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let click_pos = event.position;
 
-    fn calculate_gap(&self) -> Pixels {
-        self.window_size.width * self.config.grid.gap_percent
-    }
+        // Check if we clicked on a widget
+        let current_page = self.state.layout_manager().get_active_page_index();
+        let page = &self.state.layout_manager().get_pages()[current_page];
 
-    fn calculate_cell_size(&self) -> Pixels {
-        let padding = self.calculate_grid_padding();
-        let gap = self.calculate_gap();
-
-        let available_width =
-            self.window_size.width - (padding * 2.0) - (gap * (self.config.grid.cols - 1) as f32);
-        available_width / self.config.grid.cols as f32
-    }
-
-    fn calculate_grid_width(&self) -> Pixels {
-        let cell_size = self.calculate_cell_size();
-        let gap = self.calculate_gap();
-        cell_size * self.config.grid.cols as f32 + gap * (self.config.grid.cols - 1) as f32
-    }
-
-    fn calculate_grid_height(&self) -> Pixels {
-        let cell_size = self.calculate_cell_size();
-        let gap = self.calculate_gap();
-        cell_size * self.config.grid.rows as f32 + gap * (self.config.grid.rows - 1) as f32
-    }
-
-    fn calculate_page_offset_x(&self) -> f32 {
-        let grid_width: f32 = self.calculate_grid_width().into();
-        let window_width: f32 = self.window_size.width.into();
-        (window_width - grid_width) / 2.0
-    }
-
-    fn render_all_pages(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let page_gap = px(self.config.visual.page_gap);
-        let cell_size = self.calculate_cell_size();
-        let gap = self.calculate_gap();
-        let grid_width = self.calculate_grid_width();
-        let grid_height = self.calculate_grid_height();
-        let hovered_id = self.state.hovered_widget;
-        let selected_id = self.state.selected_widget;
-
-        let cell_size_f32: f32 = cell_size.into();
-        let gap_f32: f32 = gap.into();
-
-        for page in &mut self.state.pages {
-            for widget in &mut page.widgets {
-                if widget.current_x == 0.0
-                    && widget.current_y == 0.0
-                    && widget.target_x == 0.0
-                    && widget.target_y == 0.0
-                {
-                    widget.calculate_target_position(cell_size_f32, gap_f32);
-                    widget.current_x = widget.target_x;
-                    widget.current_y = widget.target_y;
-                }
+        // Find if we clicked on any widget
+        let mut clicked_widget = None;
+        for (widget_id, node) in &page.nodes {
+            let bounds = self.state.layout_manager().grid_to_pixel_bounds(page, node.rect);
+            if bounds.contains(&click_pos) {
+                clicked_widget = Some(*widget_id);
+                break;
             }
         }
 
-        let dragging_widget_id = self.state.dragging_widget;
-
-        let mut dragged_widget_data: Option<(Widget, usize)> = None;
-        let mut animating_widget_ids: Vec<(usize, usize)> = Vec::new(); // (widget_id, page_idx)
-
-        for (page_idx, page) in self.state.pages.iter().enumerate() {
-            for widget in &page.widgets {
-                if Some(widget.id) == dragging_widget_id {
-                    dragged_widget_data = Some((widget.clone(), page_idx));
-                } else if widget.is_animating(&self.config) {
-                    animating_widget_ids.push((widget.id, page_idx));
-                }
-            }
+        if let Some(widget_id) = clicked_widget {
+            // Start holding on this widget
+            self.drag_state = DragState::Holding {
+                widget_id,
+                start_pos: click_pos,
+                start_time: std::time::Instant::now(),
+            };
+            cx.notify();
+        } else {
+            // Start page drag
+            self.drag_state = DragState::DraggingPage {
+                start_x: event.position.x.into(),
+                current_offset: 0.0,
+            };
         }
-
-        div()
-            .flex()
-            .flex_row()
-            .gap(page_gap)
-            .children(
-                self.state
-                    .pages
-                    .iter()
-                    .enumerate()
-                    .map(|(page_index, page)| {
-                        div()
-                            .id(("page", page_index))
-                            .relative()
-                            .w(grid_width)
-                            .h(grid_height)
-                            .flex_shrink_0()
-                            .children(page.widgets.iter().filter_map(|widget| {
-                                let widget_id = widget.id;
-
-                                if Some(widget_id) == dragging_widget_id
-                                    || animating_widget_ids.iter().any(|(id, _)| *id == widget_id)
-                                {
-                                    return None;
-                                }
-
-                                let is_hovered = hovered_id == Some(widget_id);
-                                let is_selected = selected_id == Some(widget_id);
-                                let left = px(widget.current_x);
-                                let top = px(widget.current_y);
-
-                                Some(
-                            div()
-                                .id(("widget", widget_id))
-                                .absolute()
-                                .left(left)
-                                .top(top)
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(
-                                        move |homescreen, event: &MouseDownEvent, _window, cx| {
-                                            let x: f32 = event.position.x.into();
-                                            let y: f32 = event.position.y.into();
-                                            homescreen.state.start_hold(x, y, Some(widget_id));
-                                            cx.notify();
-                                        },
-                                    ),
-                                )
-                                .child(
-                                    WidgetView::new(widget.clone(), cell_size, gap)
-                                        .hovered(is_hovered)
-                                        .selected(is_selected),
-                                ),
-                        )
-                            }))
-                    }),
-            )
-            .children(
-                animating_widget_ids
-                    .into_iter()
-                    .filter_map(|(widget_id, page_idx)| {
-                        let widget = self
-                            .state
-                            .pages
-                            .get(page_idx)?
-                            .widgets
-                            .iter()
-                            .find(|w| w.id == widget_id)?;
-
-                        let is_hovered = hovered_id == Some(widget_id);
-                        let is_selected = selected_id == Some(widget_id);
-
-                        let page_gap_f32: f32 = page_gap.into();
-                        let grid_width_f32: f32 = grid_width.into();
-                        let page_offset = page_idx as f32 * (grid_width_f32 + page_gap_f32);
-
-                        let left = px(widget.current_x + page_offset);
-                        let top = px(widget.current_y);
-
-                        Some(
-                            div()
-                                .id(("widget_animating", widget_id))
-                                .absolute()
-                                .left(left)
-                                .top(top)
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(
-                                        move |homescreen, event: &MouseDownEvent, _window, cx| {
-                                            let x: f32 = event.position.x.into();
-                                            let y: f32 = event.position.y.into();
-                                            homescreen.state.start_hold(x, y, Some(widget_id));
-                                            cx.notify();
-                                        },
-                                    ),
-                                )
-                                .child(
-                                    WidgetView::new(widget.clone(), cell_size, gap)
-                                        .hovered(is_hovered)
-                                        .selected(is_selected),
-                                ),
-                        )
-                    }),
-            )
-            .when_some(dragged_widget_data, |parent_div, (widget, page_idx)| {
-                let widget_id = widget.id;
-                let is_hovered = hovered_id == Some(widget_id);
-                let is_selected = selected_id == Some(widget_id);
-
-                let page_gap_f32: f32 = page_gap.into();
-                let grid_width_f32: f32 = grid_width.into();
-                let page_offset = page_idx as f32 * (grid_width_f32 + page_gap_f32);
-
-                let left = px(widget.current_x + page_offset);
-                let top = px(widget.current_y);
-
-                parent_div.child(
-                    div()
-                        .id(("widget_dragged", widget_id))
-                        .absolute()
-                        .left(left)
-                        .top(top)
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |homescreen, event: &MouseDownEvent, _window, cx| {
-                                let x: f32 = event.position.x.into();
-                                let y: f32 = event.position.y.into();
-                                homescreen.state.start_hold(x, y, Some(widget_id));
-                                cx.notify();
-                            }),
-                        )
-                        .child(
-                            WidgetView::new(widget, cell_size, gap)
-                                .hovered(is_hovered)
-                                .selected(is_selected),
-                        ),
-                )
-            })
     }
 
-    fn render_page_indicator(&self, _cx: &mut Context<Self>) -> impl IntoElement {
-        let total_pages = self.state.pages.len();
-        let current = self.state.current_page;
+    fn handle_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.drag_state {
+            DragState::Holding {
+                widget_id,
+                start_pos,
+                start_time,
+            } => {
+                let current_pos = event.position;
+                let delta_x: f32 = (current_pos.x - start_pos.x).abs().into();
+                let delta_y: f32 = (current_pos.y - start_pos.y).abs().into();
+                let movement = (delta_x.powi(2) + delta_y.powi(2)).sqrt();
 
-        div()
-            .flex()
-            .flex_row()
-            .gap(px(self.config.visual.indicator_dot_gap))
-            .children((0..total_pages).map(|i| {
-                div()
-                    .w(px(self.config.visual.indicator_dot_size))
-                    .h(px(self.config.visual.indicator_dot_size))
-                    .rounded(px(self.config.visual.indicator_dot_size / 2.0))
-                    .bg(if i == current {
-                        rgb(self.config.visual.indicator_active_color)
-                    } else {
-                        rgba(self.config.visual.indicator_inactive_color)
-                    })
-            }))
+                // Check if we've held long enough
+                let hold_elapsed = start_time.elapsed().as_secs_f32();
+                if hold_elapsed >= self.config.interaction.hold_duration {
+                    // Get the widget bounds
+                    let current_page = self.state.layout_manager().get_active_page_index();
+                    let page = &self.state.layout_manager().get_pages()[current_page];
+                    if let Some(node) = page.nodes.get(&widget_id) {
+                        let original_bounds =
+                            self.state.layout_manager().grid_to_pixel_bounds(page, node.rect);
+
+                        // Transition to dragging widget
+                        self.drag_state = DragState::DraggingWidget {
+                            widget_id,
+                            start_pos,
+                            current_pos,
+                            original_bounds,
+                        };
+                        cx.notify();
+                    }
+                }
+                // Check if we've moved too much during hold
+                else if movement > self.config.interaction.hold_movement_threshold {
+                    // Abort widget hold, switch to page drag
+                    self.drag_state = DragState::DraggingPage {
+                        start_x: start_pos.x.into(),
+                        current_offset: 0.0,
+                    };
+                    cx.notify();
+                }
+            }
+            DragState::DraggingWidget {
+                widget_id,
+                start_pos,
+                original_bounds,
+                ..
+            } => {
+                // Update the current position
+                self.drag_state = DragState::DraggingWidget {
+                    widget_id,
+                    start_pos,
+                    current_pos: event.position,
+                    original_bounds,
+                };
+                cx.notify();
+            }
+            DragState::DraggingPage { start_x, .. } => {
+                let current_x: f32 = event.position.x.into();
+                let delta = current_x - start_x;
+
+                // Check if we've moved beyond the threshold
+                if delta.abs() >= self.config.interaction.drag_threshold {
+                    self.drag_state = DragState::DraggingPage {
+                        start_x,
+                        current_offset: delta,
+                    };
+                    self.drag_offset = delta;
+                    cx.notify();
+                }
+            }
+            DragState::Idle => {}
+        }
+    }
+
+    fn handle_mouse_up(
+        &mut self,
+        _event: &MouseUpEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.drag_state {
+            DragState::Holding { .. } => {
+                // Release without dragging, just reset
+                self.drag_state = DragState::Idle;
+                cx.notify();
+            }
+            DragState::DraggingWidget { .. } => {
+                // Widget drag released, snap back to original position
+                // (no animation for now, just reset state)
+                self.drag_state = DragState::Idle;
+                cx.notify();
+            }
+            DragState::DraggingPage { current_offset, .. } => {
+                let window_width = self.config.window.width;
+                let threshold = window_width * self.config.interaction.page_swipe_threshold;
+                let current_page = self.state.layout_manager().get_active_page_index();
+                let num_pages = self.state.layout_manager().get_pages().len();
+
+                let should_switch_left = current_offset > threshold && current_page > 0;
+                let should_switch_right =
+                    current_offset < -threshold && current_page < num_pages - 1;
+
+                self.target_offset = current_offset;
+
+                if should_switch_left {
+                    self.target_offset = -current_offset;
+                    self.state
+                        .layout_manager_mut()
+                        .set_active_page(current_page - 1);
+                } else if should_switch_right {
+                    self.target_offset = -current_offset;
+                    self.state
+                        .layout_manager_mut()
+                        .set_active_page(current_page + 1);
+                }
+
+                self.animation_trigger += 1;
+
+                self.drag_state = DragState::Idle;
+                self.drag_offset = 0.0;
+
+                cx.notify();
+            }
+            DragState::Idle => {}
+        }
     }
 }
 
 impl Render for Homescreen {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let padding = self.calculate_grid_padding();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let window_width = self.config.window.width;
+        let page_gap = self.config.visual.page_gap;
+        let current_page_idx = self.state.layout_manager().get_active_page_index();
+        let num_pages = self.state.layout_manager().get_pages().len();
 
-        let now = std::time::Instant::now();
-        let delta_time = if let Some(last_time) = self.state.last_update_time {
-            let dt = now.duration_since(last_time).as_secs_f32();
-            dt.min(self.config.animation.max_delta_time)
+        // Extract dragged widget info if dragging
+        let dragged_widget_info = if let DragState::DraggingWidget {
+            widget_id,
+            start_pos,
+            current_pos,
+            original_bounds,
+        } = self.drag_state
+        {
+            Some((widget_id, start_pos, current_pos, original_bounds))
         } else {
-            0.016
+            None
         };
-        self.state.last_update_time = Some(now);
 
-        let page_animating = self.state.update_animation(delta_time, &self.config);
+        let is_dragging_page = matches!(self.drag_state, DragState::DraggingPage { .. });
+        let drag_offset = self.drag_offset;
+        let target_offset = self.target_offset;
+        let animation_trigger = self.animation_trigger as u64;
+        let animation_duration = self.config.animation.page_transition;
 
-        let mut any_widget_animating = false;
-        for page in &mut self.state.pages {
-            for widget in &mut page.widgets {
-                if widget.update_position(delta_time, &self.config) {
-                    any_widget_animating = true;
+        let all_pages_data: Vec<_> = self
+            .state
+            .layout_manager()
+            .get_pages()
+            .iter()
+            .enumerate()
+            .map(|(page_idx, page)| {
+                let widget_data: Vec<_> = page
+                    .nodes
+                    .iter()
+                    .map(|(widget_id, node)| {
+                        let bounds = self
+                            .state
+                            .layout_manager()
+                            .grid_to_pixel_bounds(page, node.rect);
+                        (*widget_id, bounds)
+                    })
+                    .collect();
+
+                (page_idx, widget_data)
+            })
+            .collect();
+
+        let mut pages_wrapper = div().size_full().relative();
+
+        for (page_idx, widget_data) in &all_pages_data {
+            let base_offset =
+                (*page_idx as f32 - current_page_idx as f32) * (window_width + page_gap);
+
+            let mut page_div = div()
+                .absolute()
+                .size_full()
+                .left(px(base_offset))
+                .top(px(0.0));
+
+            for (widget_id, bounds) in widget_data {
+                // Skip the dragged widget, we'll render it separately
+                if let Some((dragged_id, _, _, _)) = dragged_widget_info {
+                    if *widget_id == dragged_id {
+                        continue;
+                    }
+                }
+
+                if let Some(widget) = self.state.get_widget_mut(*widget_id) {
+                    widget.set_bounds(*bounds);
+                    let widget_element = widget.render(window, cx);
+                    page_div = page_div.child(PositionedWidget::new(*bounds, widget_element));
                 }
             }
+
+            pages_wrapper = pages_wrapper.child(page_div);
         }
 
-        if self.state.dragging_widget.is_none() {
-            cx.refresh_windows();
-            if any_widget_animating || page_animating || self.state.is_animating {
-                cx.refresh_windows();
+        let pages_container = div().size_full().relative().overflow_hidden().child({
+            if is_dragging_page {
+                div()
+                    .size_full()
+                    .relative()
+                    .left(px(drag_offset))
+                    .child(pages_wrapper)
+                    .into_any_element()
+            } else {
+                div()
+                    .size_full()
+                    .relative()
+                    .child(pages_wrapper)
+                    .with_animation(
+                        ElementId::Integer(animation_trigger),
+                        Animation::new(animation_duration).with_easing(ease_out_quint()),
+                        move |element, delta| {
+                            let offset = target_offset * (1.0 - delta);
+                            element.left(px(offset))
+                        },
+                    )
+                    .into_any_element()
+            }
+        });
+
+        let mut pagination = div()
+            .absolute()
+            .bottom(px(20.0))
+            .left(px(0.0))
+            .right(px(0.0))
+            .flex()
+            .justify_center()
+            .items_center()
+            .gap(px(self.config.visual.indicator_dot_gap));
+
+        for page_idx in 0..num_pages {
+            let is_active = page_idx == current_page_idx;
+            let color = if is_active {
+                rgb(self.config.visual.indicator_active_color)
+            } else {
+                rgba(self.config.visual.indicator_inactive_color)
+            };
+
+            let dot = div()
+                .w(px(self.config.visual.indicator_dot_size))
+                .h(px(self.config.visual.indicator_dot_size))
+                .rounded(px(self.config.visual.indicator_dot_size / 2.0))
+                .bg(color);
+
+            pagination = pagination.child(dot);
+        }
+
+        let mut main_container = div()
+            .size_full()
+            .bg(rgb(self.config.visual.background_color))
+            .relative()
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_mouse_down))
+            .on_mouse_move(cx.listener(Self::handle_mouse_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::handle_mouse_up))
+            .child(pages_container)
+            .child(pagination);
+
+        // Render dragged widget if we're dragging one
+        if let Some((widget_id, start_pos, current_pos, original_bounds)) = dragged_widget_info {
+            if let Some(widget) = self.state.get_widget_mut(widget_id) {
+                // Calculate the dragged position
+                let drag_offset_x = current_pos.x - start_pos.x;
+                let drag_offset_y = current_pos.y - start_pos.y;
+
+                let dragged_bounds = Bounds {
+                    origin: point(
+                        original_bounds.origin.x + drag_offset_x,
+                        original_bounds.origin.y + drag_offset_y,
+                    ),
+                    size: original_bounds.size,
+                };
+
+                widget.set_bounds(dragged_bounds);
+                let widget_element = widget.render(window, cx);
+                main_container =
+                    main_container.child(PositionedWidget::new(dragged_bounds, widget_element));
             }
         }
 
-        let visual_offset = self.state.get_visual_offset();
-
-        div()
-            .id("homescreen-container")
-            .flex()
-            .flex_col()
-            .w_full()
-            .h_full()
-            .bg(rgb(self.config.visual.background_color))
-            .items_center()
-            .justify_center()
-            .gap(padding)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|homescreen, event: &MouseDownEvent, _window, cx| {
-                    homescreen.state.start_drag(event.position.x);
-                    cx.notify();
-                }),
-            )
-            .on_mouse_move(
-                cx.listener(|homescreen, event: &MouseMoveEvent, _window, cx| {
-                    let x: f32 = event.position.x.into();
-                    let y: f32 = event.position.y.into();
-
-                    if homescreen.state.check_hold(x, y, &homescreen.config) {
-                        cx.notify();
-                    }
-
-                    if let Some(dragging_widget_id) = homescreen.state.dragging_widget {
-                        let cell_size_f32: f32 = homescreen.calculate_cell_size().into();
-                        let gap_f32: f32 = homescreen.calculate_gap().into();
-
-                        for page in &mut homescreen.state.pages {
-                            if let Some(widget) =
-                                page.widgets.iter_mut().find(|w| w.id == dragging_widget_id)
-                            {
-                                widget.set_drag_target(x, y, cell_size_f32, gap_f32);
-                                break;
-                            }
-                        }
-
-                        let window_width: f32 = homescreen.window_size.width.into();
-                        let grid_width: f32 = homescreen.calculate_grid_width().into();
-                        if homescreen.state.check_edge_trigger(
-                            x,
-                            window_width,
-                            grid_width,
-                            homescreen.config.visual.page_gap,
-                            &homescreen.config,
-                        ) {
-                            cx.notify();
-                        }
-
-                        cx.notify();
-                    } else if event.dragging() {
-                        homescreen.state.update_drag(event.position.x);
-                        cx.notify();
-                    }
-                }),
-            )
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|homescreen, _event: &MouseUpEvent, _window, cx| {
-                    if homescreen.state.dragging_widget.is_some() {
-                        let dragging_widget_id = homescreen.state.dragging_widget.unwrap();
-
-                        let cell_size_f32: f32 = homescreen.calculate_cell_size().into();
-                        let gap_f32: f32 = homescreen.calculate_gap().into();
-
-                        let mut current_page_idx = None;
-                        for (page_idx, page) in homescreen.state.pages.iter().enumerate() {
-                            if page.widgets.iter().any(|w| w.id == dragging_widget_id) {
-                                current_page_idx = Some(page_idx);
-                                break;
-                            }
-                        }
-
-                        if let Some(page_idx) = current_page_idx {
-                            let widget = homescreen.state.pages[page_idx]
-                                .widgets
-                                .iter()
-                                .find(|w| w.id == dragging_widget_id)
-                                .unwrap();
-
-                            let col =
-                                (widget.current_x / (cell_size_f32 + gap_f32)).round() as usize;
-                            let row =
-                                (widget.current_y / (cell_size_f32 + gap_f32)).round() as usize;
-                            let drop_position = GridPosition::new(col, row);
-
-                            let rearrange_result = homescreen.state.pages[page_idx]
-                                .try_rearrange_on_drop(
-                                    dragging_widget_id,
-                                    drop_position,
-                                    cell_size_f32,
-                                    gap_f32,
-                                );
-
-                            match rearrange_result {
-                                Ok(_) => {
-                                    for widget in &mut homescreen.state.pages[page_idx].widgets {
-                                        widget.calculate_target_position(cell_size_f32, gap_f32);
-                                    }
-                                }
-                                Err(_e) => {
-                                    let grid_width_f32: f32 =
-                                        homescreen.calculate_grid_width().into();
-                                    homescreen.state.return_widget_to_original_page(
-                                        dragging_widget_id,
-                                        grid_width_f32,
-                                        homescreen.config.visual.page_gap,
-                                    );
-
-                                    for page in &mut homescreen.state.pages {
-                                        if let Some(widget) = page
-                                            .widgets
-                                            .iter_mut()
-                                            .find(|w| w.id == dragging_widget_id)
-                                        {
-                                            widget
-                                                .calculate_target_position(cell_size_f32, gap_f32);
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        homescreen.state.end_widget_drag();
-                    } else {
-                        let grid_width_f32: f32 = homescreen.calculate_grid_width().into();
-                        homescreen.state.end_drag(
-                            grid_width_f32,
-                            homescreen.config.visual.page_gap,
-                            &homescreen.config,
-                        );
-                    }
-                    homescreen.state.cancel_hold();
-                    cx.notify();
-                }),
-            )
-            .child(
-                div().relative().w_full().h_full().overflow_hidden().child(
-                    div()
-                        .absolute()
-                        .left(px(visual_offset + self.calculate_page_offset_x()))
-                        .child(self.render_all_pages(cx)),
-                ),
-            )
-            .child(self.render_page_indicator(cx))
-            .child(
-                div()
-                    .absolute()
-                    .bottom(px(self.config.visual.debug_info_offset))
-                    .left(px(self.config.visual.debug_info_offset))
-                    .text_size(px(self.config.visual.debug_info_text_size))
-                    .text_color(rgba(self.config.visual.debug_info_text_color))
-                    .child(format!(
-                        "Hovered: {:?} | Selected: {:?} | Page: {}/{}",
-                        self.state.hovered_widget,
-                        self.state.selected_widget,
-                        self.state.current_page + 1,
-                        self.state.pages.len()
-                    )),
-            )
+        main_container
     }
 }
