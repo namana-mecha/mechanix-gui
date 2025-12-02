@@ -68,11 +68,11 @@ impl Default for GridConfig {
 
 #[derive(Clone, Debug)]
 pub struct AnimationConfig {
-    /// Widget animation speed in pixels per second
-    pub widget_speed: f32,
-
     /// Page transition animation duration
     pub page_transition: std::time::Duration,
+
+    /// Widget return animation duration (when dropped back to original position)
+    pub widget_return: std::time::Duration,
 
     /// Maximum delta time for animation updates to prevent jumps (in seconds)
     pub max_delta_time: f32,
@@ -84,8 +84,8 @@ pub struct AnimationConfig {
 impl Default for AnimationConfig {
     fn default() -> Self {
         Self {
-            widget_speed: 5000.0,
             page_transition: std::time::Duration::from_millis(300),
+            widget_return: std::time::Duration::from_millis(300),
             max_delta_time: 0.1,
             completion_threshold: 1.0,
         }

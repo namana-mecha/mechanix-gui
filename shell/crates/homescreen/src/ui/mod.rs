@@ -57,6 +57,18 @@ pub struct Homescreen {
     drag_offset: f32,         // Current offset during drag
     target_offset: f32,       // Target offset for animation (always 0.0 when at rest)
     animation_trigger: usize, // Increment to trigger new animation
+
+    // Widget return animation state (supports multiple widgets animating simultaneously)
+    widget_animations: Vec<WidgetAnimationState>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct WidgetAnimationState {
+    widget_id: crate::layout_manager::WidgetId,
+    start_bounds: Bounds<Pixels>,
+    target_bounds: Bounds<Pixels>,
+    trigger: usize,
+    start_time: std::time::Instant,
 }
 
 impl Homescreen {
@@ -69,6 +81,7 @@ impl Homescreen {
             drag_offset: 0.0,
             target_offset: 0.0,
             animation_trigger: 0,
+            widget_animations: Vec::new(),
         }
     }
 
@@ -203,9 +216,37 @@ impl Homescreen {
                 self.drag_state = DragState::Idle;
                 cx.notify();
             }
-            DragState::DraggingWidget { .. } => {
-                // Widget drag released, snap back to original position
-                // (no animation for now, just reset state)
+            DragState::DraggingWidget {
+                widget_id,
+                start_pos,
+                current_pos,
+                original_bounds,
+            } => {
+                // Calculate current dragged position
+                let drag_offset_x = current_pos.x - start_pos.x;
+                let drag_offset_y = current_pos.y - start_pos.y;
+
+                let current_bounds = Bounds {
+                    origin: point(
+                        original_bounds.origin.x + drag_offset_x,
+                        original_bounds.origin.y + drag_offset_y,
+                    ),
+                    size: original_bounds.size,
+                };
+
+                // Set up animation to return to original position
+                // Remove any existing animation for this widget
+                self.widget_animations.retain(|w| w.widget_id != widget_id);
+
+                let trigger = self.widget_animations.len();
+                self.widget_animations.push(WidgetAnimationState {
+                    widget_id,
+                    start_bounds: current_bounds,
+                    target_bounds: original_bounds,
+                    trigger,
+                    start_time: std::time::Instant::now(),
+                });
+
                 self.drag_state = DragState::Idle;
                 cx.notify();
             }
@@ -265,6 +306,15 @@ impl Render for Homescreen {
             None
         };
 
+        // Remove completed animations before rendering
+        let animation_duration = self.config.animation.widget_return;
+        self.widget_animations.retain(|anim| {
+            anim.start_time.elapsed() < animation_duration
+        });
+
+        // Clone animating widget info for rendering
+        let animating_widgets: Vec<_> = self.widget_animations.clone();
+
         let is_dragging_page = matches!(self.drag_state, DragState::DraggingPage { .. });
         let drag_offset = self.drag_offset;
         let target_offset = self.target_offset;
@@ -312,6 +362,11 @@ impl Render for Homescreen {
                     if *widget_id == dragged_id {
                         continue;
                     }
+                }
+
+                // Skip animating widgets, we'll render them separately
+                if animating_widgets.iter().any(|anim| anim.widget_id == *widget_id) {
+                    continue;
                 }
 
                 if let Some(widget) = self.state.get_widget_mut(*widget_id) {
@@ -405,6 +460,39 @@ impl Render for Homescreen {
                 let widget_element = widget.render(window, cx);
                 main_container =
                     main_container.child(PositionedWidget::new(dragged_bounds, widget_element));
+            }
+        }
+
+        // Render animating widgets
+        for anim_state in animating_widgets {
+            if let Some(widget) = self.state.get_widget_mut(anim_state.widget_id) {
+                let start_bounds = anim_state.start_bounds;
+                let target_bounds = anim_state.target_bounds;
+                let trigger = anim_state.trigger;
+                let animation_duration = self.config.animation.widget_return;
+
+                widget.set_bounds(target_bounds);
+                let widget_element = widget.render(window, cx);
+
+                let positioned_widget = PositionedWidget::new(target_bounds, widget_element);
+
+                main_container = main_container.child(
+                    div()
+                        .absolute()
+                        .size_full()
+                        .child(positioned_widget)
+                        .with_animation(
+                            ElementId::Integer(trigger as u64),
+                            Animation::new(animation_duration).with_easing(ease_out_quint()),
+                            move |element, delta| {
+                                // Interpolate from start to target
+                                // offset_x and offset_y are Pixels, convert to f32 for calculation
+                                let offset_x: f32 = (start_bounds.origin.x - target_bounds.origin.x).into();
+                                let offset_y: f32 = (start_bounds.origin.y - target_bounds.origin.y).into();
+                                element.left(px(offset_x * (1.0 - delta))).top(px(offset_y * (1.0 - delta)))
+                            },
+                        ),
+                );
             }
         }
 
