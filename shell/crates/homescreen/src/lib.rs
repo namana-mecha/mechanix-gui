@@ -1,3 +1,5 @@
+#![recursion_limit = "1024"]
+
 pub mod config;
 pub mod layout_manager;
 pub mod models;

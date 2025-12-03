@@ -45,9 +45,13 @@ enum DragState {
         start_pos: Point<Pixels>,
         current_pos: Point<Pixels>,
         original_bounds: Bounds<Pixels>,
+        original_page_index: usize,
     },
     /// Dragging to switch pages
-    DraggingPage { start_x: f32, current_offset: f32 },
+    DraggingPage {
+        start_x: f32,
+        current_offset: f32,
+    },
 }
 
 pub struct Homescreen {
@@ -60,6 +64,21 @@ pub struct Homescreen {
 
     // Widget return animation state (supports multiple widgets animating simultaneously)
     widget_animations: Vec<WidgetAnimationState>,
+
+    // Edge hold tracking for page switching during widget drag
+    edge_hold_state: Option<EdgeHoldState>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct EdgeHoldState {
+    direction: EdgeDirection,
+    start_time: std::time::Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum EdgeDirection {
+    Left,
+    Right,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -69,6 +88,7 @@ struct WidgetAnimationState {
     target_bounds: Bounds<Pixels>,
     trigger: usize,
     start_time: std::time::Instant,
+    page_index: usize,
 }
 
 impl Homescreen {
@@ -82,6 +102,7 @@ impl Homescreen {
             target_offset: 0.0,
             animation_trigger: 0,
             widget_animations: Vec::new(),
+            edge_hold_state: None,
         }
     }
 
@@ -100,7 +121,10 @@ impl Homescreen {
         // Find if we clicked on any widget
         let mut clicked_widget = None;
         for (widget_id, node) in &page.nodes {
-            let bounds = self.state.layout_manager().grid_to_pixel_bounds(page, node.rect);
+            let bounds = self
+                .state
+                .layout_manager()
+                .grid_to_pixel_bounds(page, node.rect);
             if bounds.contains(&click_pos) {
                 clicked_widget = Some(*widget_id);
                 break;
@@ -148,8 +172,10 @@ impl Homescreen {
                     let current_page = self.state.layout_manager().get_active_page_index();
                     let page = &self.state.layout_manager().get_pages()[current_page];
                     if let Some(node) = page.nodes.get(&widget_id) {
-                        let original_bounds =
-                            self.state.layout_manager().grid_to_pixel_bounds(page, node.rect);
+                        let original_bounds = self
+                            .state
+                            .layout_manager()
+                            .grid_to_pixel_bounds(page, node.rect);
 
                         // Transition to dragging widget
                         self.drag_state = DragState::DraggingWidget {
@@ -157,6 +183,7 @@ impl Homescreen {
                             start_pos,
                             current_pos,
                             original_bounds,
+                            original_page_index: current_page,
                         };
                         cx.notify();
                     }
@@ -175,14 +202,89 @@ impl Homescreen {
                 widget_id,
                 start_pos,
                 original_bounds,
+                original_page_index,
                 ..
             } => {
+                let current_pos = event.position;
+                let window_width = self.config.window.width;
+                let edge_threshold = self.config.interaction.edge_trigger_threshold;
+                let current_page = self.state.layout_manager().get_active_page_index();
+                let num_pages = self.state.layout_manager().get_pages().len();
+
+                // Check if widget is near left or right edge
+                let pos_x: f32 = current_pos.x.into();
+                let at_left_edge = pos_x < edge_threshold && current_page > 0;
+                let at_right_edge = pos_x > (window_width - edge_threshold) && current_page < num_pages - 1;
+
+                // Update or clear edge hold state
+                if at_left_edge {
+                    if let Some(edge_state) = self.edge_hold_state {
+                        if edge_state.direction != EdgeDirection::Left {
+                            // Direction changed, reset timer
+                            self.edge_hold_state = Some(EdgeHoldState {
+                                direction: EdgeDirection::Left,
+                                start_time: std::time::Instant::now(),
+                            });
+                        }
+                        // Check if we've held long enough to switch pages
+                        else if edge_state.start_time.elapsed().as_millis() >= self.config.interaction.edge_hold_duration as u128 {
+                            // Switch to previous page with animation
+                            let page_gap = self.config.visual.page_gap;
+                            let target_offset = -(window_width + page_gap);
+
+                            self.state.layout_manager_mut().set_active_page(current_page - 1);
+                            self.target_offset = target_offset;
+                            self.animation_trigger += 1;
+                            self.edge_hold_state = None; // Reset to require full duration again
+                            cx.notify();
+                        }
+                    } else {
+                        // Start tracking edge hold
+                        self.edge_hold_state = Some(EdgeHoldState {
+                            direction: EdgeDirection::Left,
+                            start_time: std::time::Instant::now(),
+                        });
+                    }
+                } else if at_right_edge {
+                    if let Some(edge_state) = self.edge_hold_state {
+                        if edge_state.direction != EdgeDirection::Right {
+                            // Direction changed, reset timer
+                            self.edge_hold_state = Some(EdgeHoldState {
+                                direction: EdgeDirection::Right,
+                                start_time: std::time::Instant::now(),
+                            });
+                        }
+                        // Check if we've held long enough to switch pages
+                        else if edge_state.start_time.elapsed().as_millis() >= self.config.interaction.edge_hold_duration as u128 {
+                            // Switch to next page with animation
+                            let page_gap = self.config.visual.page_gap;
+                            let target_offset = window_width + page_gap;
+
+                            self.state.layout_manager_mut().set_active_page(current_page + 1);
+                            self.target_offset = target_offset;
+                            self.animation_trigger += 1;
+                            self.edge_hold_state = None; // Reset to require full duration again
+                            cx.notify();
+                        }
+                    } else {
+                        // Start tracking edge hold
+                        self.edge_hold_state = Some(EdgeHoldState {
+                            direction: EdgeDirection::Right,
+                            start_time: std::time::Instant::now(),
+                        });
+                    }
+                } else {
+                    // Not at edge, clear hold state
+                    self.edge_hold_state = None;
+                }
+
                 // Update the current position
                 self.drag_state = DragState::DraggingWidget {
                     widget_id,
                     start_pos,
-                    current_pos: event.position,
+                    current_pos,
                     original_bounds,
+                    original_page_index,
                 };
                 cx.notify();
             }
@@ -221,31 +323,30 @@ impl Homescreen {
                 start_pos,
                 current_pos,
                 original_bounds,
+                original_page_index: _,
             } => {
-                // Calculate current dragged position
+                // Clear edge hold state
+                self.edge_hold_state = None;
+
+                // Calculate current dragged position in pixels
                 let drag_offset_x = current_pos.x - start_pos.x;
                 let drag_offset_y = current_pos.y - start_pos.y;
 
-                let current_bounds = Bounds {
-                    origin: point(
-                        original_bounds.origin.x + drag_offset_x,
-                        original_bounds.origin.y + drag_offset_y,
-                    ),
-                    size: original_bounds.size,
-                };
+                let current_center_x: f32 = (original_bounds.origin.x + drag_offset_x + original_bounds.size.width / 2.0).into();
+                let current_center_y: f32 = (original_bounds.origin.y + drag_offset_y + original_bounds.size.height / 2.0).into();
 
-                // Set up animation to return to original position
-                // Remove any existing animation for this widget
-                self.widget_animations.retain(|w| w.widget_id != widget_id);
+                let current_page = self.state.layout_manager().get_active_page_index();
 
-                let trigger = self.widget_animations.len();
-                self.widget_animations.push(WidgetAnimationState {
+                // Use the layout engine to calculate where widgets should be repositioned
+                let mutation = self.state.layout_manager_mut().on_drag_hover(
+                    Some(current_page),
                     widget_id,
-                    start_bounds: current_bounds,
-                    target_bounds: original_bounds,
-                    trigger,
-                    start_time: std::time::Instant::now(),
-                });
+                    current_center_x,
+                    current_center_y,
+                );
+
+                // Apply the mutation to update widget positions
+                self.state.layout_manager_mut().apply_mutation(mutation);
 
                 self.drag_state = DragState::Idle;
                 cx.notify();
@@ -299,6 +400,7 @@ impl Render for Homescreen {
             start_pos,
             current_pos,
             original_bounds,
+            ..
         } = self.drag_state
         {
             Some((widget_id, start_pos, current_pos, original_bounds))
@@ -308,12 +410,16 @@ impl Render for Homescreen {
 
         // Remove completed animations before rendering
         let animation_duration = self.config.animation.widget_return;
-        self.widget_animations.retain(|anim| {
-            anim.start_time.elapsed() < animation_duration
-        });
+        self.widget_animations
+            .retain(|anim| anim.start_time.elapsed() < animation_duration);
 
-        // Clone animating widget info for rendering
-        let animating_widgets: Vec<_> = self.widget_animations.clone();
+        // Clone animating widget info for rendering (only for current page)
+        let animating_widgets: Vec<_> = self
+            .widget_animations
+            .iter()
+            .filter(|anim| anim.page_index == current_page_idx)
+            .copied()
+            .collect();
 
         let is_dragging_page = matches!(self.drag_state, DragState::DraggingPage { .. });
         let drag_offset = self.drag_offset;
@@ -365,7 +471,10 @@ impl Render for Homescreen {
                 }
 
                 // Skip animating widgets, we'll render them separately
-                if animating_widgets.iter().any(|anim| anim.widget_id == *widget_id) {
+                if animating_widgets
+                    .iter()
+                    .any(|anim| anim.widget_id == *widget_id)
+                {
                     continue;
                 }
 
@@ -487,9 +596,13 @@ impl Render for Homescreen {
                             move |element, delta| {
                                 // Interpolate from start to target
                                 // offset_x and offset_y are Pixels, convert to f32 for calculation
-                                let offset_x: f32 = (start_bounds.origin.x - target_bounds.origin.x).into();
-                                let offset_y: f32 = (start_bounds.origin.y - target_bounds.origin.y).into();
-                                element.left(px(offset_x * (1.0 - delta))).top(px(offset_y * (1.0 - delta)))
+                                let offset_x: f32 =
+                                    (start_bounds.origin.x - target_bounds.origin.x).into();
+                                let offset_y: f32 =
+                                    (start_bounds.origin.y - target_bounds.origin.y).into();
+                                element
+                                    .left(px(offset_x * (1.0 - delta)))
+                                    .top(px(offset_y * (1.0 - delta)))
                             },
                         ),
                 );
